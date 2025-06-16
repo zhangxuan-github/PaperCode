@@ -1,12 +1,15 @@
 import numpy as np
 from itertools import product
 import random
-
-# 设置随机种子
+import matplotlib
+import matplotlib.pyplot as plt
+#设置随机种子
 # np.random.seed(42)
 # random.seed(42)
-
-
+matplotlib.use('Agg')  # 使用非交互式后端，便于保存图片
+matplotlib.rcParams['font.family'] = 'STHeiti'
+matplotlib.rcParams['axes.unicode_minus'] = False  # 解决负号'-'显示为方块的问题
+  
 class UAV:
     """
     无人机类 - 负责UAV飞行、计算任务生成、通信
@@ -34,8 +37,8 @@ class UAV:
         self.delta_t = 1  # 时隙长度 s
 
         # 通信参数 (方程4)
-        self.B = 20e6  # 上行带宽 Hz
-        self.sigma_squared = 1e-10  # 噪声功率
+        self.B = 1e6  # 上行带宽 Hz（是一个无人机的带宽，我这做出了修改，和论文中略有不同）
+        self.sigma_squared = 1e-12  # 噪声功率
         self.num_antennas = 1  # 天线数量
 
         # 无人机发射功率参数
@@ -47,7 +50,7 @@ class UAV:
 
         # 本地计算能力参数 (方程14-16)
         self.f_local = 5e9  # 本地CPU处理能力 Hz
-        self.lambda_local = 1e-28  # 本地执行能耗系数
+        self.lambda_local = 1e-28 # 本地执行能耗系数
 
         # 反射系数（用于感知模型，方程7）
         self.reflection_coefficient = random.uniform(0.1, 1.0)
@@ -133,11 +136,11 @@ class UAV:
         h_estimated, channel_error = self.calculate_channel_gain(t, bs_pos)
 
         # 修正后的传输速率
-        rate = (self.B / N_total) * np.log2(1 + (
+        rate = (self.B) * np.log2(1 + (
                 self.transmission_power[t] * np.abs(h_estimated) ** 2 /
                 (self.transmission_power[t] * (channel_error ** 2) + self.sigma_squared)
         ))
-
+        # print(f"传输速率是:{rate}")
         return rate
 
     def calculate_channel_gain(self, t, bs_pos):
@@ -247,7 +250,6 @@ class UAV:
             return self.lambda_local * (self.f_local ** 2) * task['cpu_cycles']
         else:
             return float('inf')
-
     def calculate_uplink_transmission_time(self, task, t, bs_pos, N_total):
         """
         计算上行传输时间（方程17）
@@ -357,16 +359,21 @@ class MEC:
     移动边缘计算服务器类 - 负责处理感知任务和卸载的计算任务
     """
 
-    def __init__(self, capacity=1e11, max_queue_length=100, is_debug=False):
+    def __init__(self,N, capacity=1e11, max_queue_length=100, is_debug=False):
         """
         初始化MEC服务器
         :param capacity: 处理能力 Hz
         :param max_queue_length: 最大队列长度
         :param is_debug: 调试模式
         """
+        self.N = N
         self.capacity = capacity
         self.max_queue_length = max_queue_length
         self.is_debug = is_debug
+
+        # MEC能耗参数
+        self.lambda_mec = 1e-28  # MEC能耗系数
+        self.f_mec = capacity/N    # MEC处理频率，默认等于capacity
 
         # 队列管理
         self.queue_length = None  # 数据队列长度（字节）
@@ -378,7 +385,7 @@ class MEC:
         self.omega3 = 1 / 3  # 等待时间权重
 
         # 处理优先级靠前的前k个任务
-        self.k = 5
+        self.k = 6
 
         # 统计信息
         self.processed_tasks = 0
@@ -413,7 +420,7 @@ class MEC:
         初始化任务队列，每个时隙的任务队列长度是不同的
         :param T: 总时隙数
         """
-        self.queue_length = np.zeros(T + 1)
+        self.queue_length = np.zeros(T + 1)                                                                         
 
     def update_queue_length(self, t, arrived_tasks, completed_tasks):
         """
@@ -522,9 +529,13 @@ class MEC:
 
         for task in sorted_tasks:
             if task in priority_tasks and used_capacity < self.capacity:
+                # print(f"已使用的容量为：{used_capacity}")
+                # print(f"总容量为：{self.capacity}")
                 # 为优先任务分配足够的处理能力
                 required_freq = task['cpu_cycles'] / 1.0  # 使任务在1个时隙内完成所需的频率
-
+                # print(f"任务所需频率为：{required_freq}")
+                # print(f"任务CPU周期为：{task['cpu_cycles']}")
+                # print(f"任务类型为：{task['type']}")
                 if required_freq <= (self.capacity - used_capacity):
                     # 如果有足够的剩余容量
                     allocated_freq = required_freq
@@ -560,6 +571,23 @@ class MEC:
                 f"  MEC时隙{t}: 到达{len(arrived_tasks)}个任务, 完成{len(completed_tasks)}个任务, 队列剩余{len(remaining_tasks)}个任务")
 
         return completed_tasks, remaining_tasks
+
+    def calculate_mec_energy(self, task, num_parallel_tasks=None):
+        """
+        计算MEC处理能耗
+        优先用实际分配频率，否则用估算频率
+        """
+        if task['type'] == 'computation':
+            if 'allocated_frequency' in task:
+                f_mec = task['allocated_frequency']
+            elif num_parallel_tasks is not None and num_parallel_tasks > 0:
+                f_mec = self.capacity / num_parallel_tasks
+            else:
+                f_mec = self.f_mec/self.k
+            # print(f"MEC实际频率为:{f_mec}")
+            return self.lambda_mec * (f_mec ** 2) * task['cpu_cycles']
+        else:
+            return float('inf')
 
 
 class UAVMECSystem:
@@ -600,7 +628,7 @@ class UAVMECSystem:
             self.uavs.append(uav)
 
         # 创建MEC实例
-        self.mec = MEC(is_debug=is_debug)
+        self.mec = MEC(N,is_debug=is_debug)
         self.mec.initialize_queue(T)
 
         # 预存储所有时隙的感知任务
@@ -671,14 +699,28 @@ class UAVMECSystem:
 
         for task in computation_tasks:
             uav = self.uavs[task['uav_id']]
-
-            if task['offload_decision'] == 1:  # 本地处理（方程21）
+                        # 1. 估算卸载到MEC的总时延
+            offload_delay = uav.calculate_uplink_transmission_time(task, t, self.base_station.position, self.N) \
+                            + self.estimate_mec_processing_delay(task, t)
+            # 2. 截止时间
+            deadline = task['deadline'] - t
+            if offload_delay > deadline:
+                # 只能本地处理
+                print(f"任务{task['task_id']}在时隙{t}只能本地处理，因为卸载到MEC的总时延{offload_delay}超过了截止时间{deadline}")
+                task['offload_decision'] = 1
                 delay = uav.calculate_local_processing_time(task)
                 energy = uav.calculate_local_energy(task)
                 # 使用本地处理权重
+                # print(f"本地处理延迟为:{delay},能耗为: {energy}")
+                task_cost = self.alpha_local_delay * delay + self.alpha_local_energy * energy
+            elif task['offload_decision'] == 1:  # 本地处理（方程21）
+                delay = uav.calculate_local_processing_time(task)
+                energy = uav.calculate_local_energy(task)
+                # 使用本地处理权重
+                # print(f"本地处理延迟为:{delay},能耗为: {energy}")
                 task_cost = self.alpha_local_delay * delay + self.alpha_local_energy * energy
 
-            else:  # 卸载到MEC（方程23）
+            else: # 卸载到MEC（方程23）
                 # 上行传输时间和能耗
                 delay = uav.calculate_uplink_transmission_time(
                     task, t, self.base_station.position, self.N
@@ -690,15 +732,15 @@ class UAVMECSystem:
 
                 energy = uav.calculate_uplink_energy(
                     task, t, self.base_station.position, self.N
-                )
+                )+self.mec.calculate_mec_energy(task)
 
                 # 使用卸载处理权重
                 task_cost = self.alpha_offload_delay * delay + self.alpha_offload_energy * energy
-
+                # print(f"卸载到MEC处理延迟为:{delay},能耗为: {energy}")
             total_cost += task_cost
             total_delay += delay
             total_energy += energy
-
+            # print(f"任务标号：{task['task_id']},卸载还是本地处理:{task['offload_decision']},对应成本是多少: {task_cost}")
         return total_cost, total_delay, total_energy
 
     def estimate_mec_processing_delay(self, task, t):
@@ -712,39 +754,24 @@ class UAVMECSystem:
         # 策略1: 基于当前队列状态的估算
         return self._estimate_based_on_queue_state(task, t)
 
-        # 策略2: 基于历史平均的估算
-        # return self._estimate_based_on_history(task, t)
 
     def _estimate_based_on_queue_state(self, task, t):
         """策略1: 基于当前队列状态的估算"""
-        # 1. 估算队列等待时间
-        if t < len(self.mec.queue_length):
-            current_queue_length = self.mec.queue_length[t]
-            # 根据当前队列长度和处理能力估算等待时间
-            estimated_queue_wait = current_queue_length / (self.mec.capacity * 0.8)  # 考虑80%利用率
+        # 1. 统计队列中所有任务的总计算量
+        # print(f"当前队列的剩余长度:{len(self.mec.queued_tasks)}")
+        total_cpu_cycles = sum(qtask.get('cpu_cycles', 0) for qtask in self.mec.queued_tasks)
+        # print(f"当前cpu总周期:{total_cpu_cycles}")
+        # 2. 估算排队时延
+        if self.mec.capacity > 0:
+            estimated_queue_wait = total_cpu_cycles / self.mec.f_mec
         else:
             estimated_queue_wait = 0
-
-        # 2. 估算纯处理时间
-        estimated_processing_time = task['cpu_cycles'] / self.mec.capacity
-
-        # 3. 考虑调度和优先级影响
-        # 如果当前有很多任务在队列中，新任务可能需要等待
-        queue_congestion_factor = 1.0
-        if len(self.mec.queued_tasks) > self.mec.k:
-            queue_congestion_factor = 1.2 + 0.1 * (len(self.mec.queued_tasks) - self.mec.k)
-
-        total_delay = (estimated_queue_wait + estimated_processing_time) * queue_congestion_factor
+        # 3. 估算本任务的处理时延
+        estimated_processing_time = task['cpu_cycles'] / self.mec.f_mec
+        # 4. 综合
+        total_delay = estimated_queue_wait + estimated_processing_time
+        # print(f"估计的处理延迟为:{total_delay}")
         return total_delay
-
-    def _estimate_based_on_history(self, task, t):
-        """策略2: 基于历史平均处理时间的估算"""
-        if self.mec.processed_tasks > 0:
-            avg_processing_time = self.mec.total_processing_time / self.mec.processed_tasks
-            return avg_processing_time
-        else:
-            # 如果没有历史数据，回退到基于队列状态的估算
-            return self._estimate_based_on_queue_state(task, t)
 
     def optimize_joint_variables(self, computation_tasks, t):
         """
@@ -916,11 +943,10 @@ class UAVMECSystem:
             'total_delay': self.total_delay,
             'total_energy': self.total_energy,
             'mec_processed_tasks': self.mec.processed_tasks,
-            'final_queue_length': self.mec.queue_length[-1]
         }
 
 
-def main(N=2, T=3):
+def main(N, T):
     """
     主函数
     :param N: UAV数量
