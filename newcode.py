@@ -2,14 +2,15 @@ import numpy as np
 from itertools import product
 import random
 import matplotlib
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt 
+
 #设置随机种子
 # np.random.seed(42)
 # random.seed(42)
-matplotlib.use('Agg')  # 使用非交互式后端，便于保存图片
+# matplotlib.use('Agg')  # 使用非交互式后端，便于保存图片
 matplotlib.rcParams['font.family'] = 'STHeiti'
 matplotlib.rcParams['axes.unicode_minus'] = False  # 解决负号'-'显示为方块的问题
-  
+
 class UAV:
     """
     无人机类 - 负责UAV飞行、计算任务生成、通信
@@ -945,7 +946,20 @@ class UAVMECSystem:
             'mec_processed_tasks': self.mec.processed_tasks,
         }
 
-
+    # def plot_power_allocation(self, p):
+    #     plt.figure(figsize=(12, 8))
+        
+ 
+        
+    #     # 添加标签和标题
+    #     plt.xlabel('时间槽', fontsize=14)
+    #     plt.ylabel('传输功率 (W)', fontsize=14)
+    #     plt.title('UAV传输功率分配', fontsize=16)
+    #     plt.grid(True)
+    #     plt.show()
+    #     # plt.savefig('results/power_allocation.png', dpi=300)
+    #     # plt.close()
+        
 def main(N, T):
     """
     主函数
@@ -963,9 +977,11 @@ def main(N, T):
     print("\n=== 系统统计信息 ===")
     for key, value in stats.items():
         print(f"{key}: {value}")
-
+    
+    # 绘制功率分配图
+    # system.plot_power_allocation(system)
     return total_cost, total_delay, total_energy
 
 
 if __name__ == '__main__':
-    main(N=5, T=5)
+    main(N=2, T=1)
